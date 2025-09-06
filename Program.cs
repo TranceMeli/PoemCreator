@@ -11,6 +11,5 @@ namespace Poems
             //list.write();
             list.Shuffle();           
         }
-
     }
 }
