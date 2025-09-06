@@ -1,0 +1,15 @@
+C:\Users\SchadlMelani_3k1p0ca\source\repos\Shop\Poems\bin\Debug\net8.0\Poems.exe
+C:\Users\SchadlMelani_3k1p0ca\source\repos\Shop\Poems\bin\Debug\net8.0\Poems.deps.json
+C:\Users\SchadlMelani_3k1p0ca\source\repos\Shop\Poems\bin\Debug\net8.0\Poems.runtimeconfig.json
+C:\Users\SchadlMelani_3k1p0ca\source\repos\Shop\Poems\bin\Debug\net8.0\Poems.dll
+C:\Users\SchadlMelani_3k1p0ca\source\repos\Shop\Poems\bin\Debug\net8.0\Poems.pdb
+C:\Users\SchadlMelani_3k1p0ca\source\repos\Shop\Poems\obj\Debug\net8.0\Poems.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\SchadlMelani_3k1p0ca\source\repos\Shop\Poems\obj\Debug\net8.0\Poems.AssemblyInfoInputs.cache
+C:\Users\SchadlMelani_3k1p0ca\source\repos\Shop\Poems\obj\Debug\net8.0\Poems.AssemblyInfo.cs
+C:\Users\SchadlMelani_3k1p0ca\source\repos\Shop\Poems\obj\Debug\net8.0\Poems.csproj.CoreCompileInputs.cache
+C:\Users\SchadlMelani_3k1p0ca\source\repos\Shop\Poems\obj\Debug\net8.0\Poems.sourcelink.json
+C:\Users\SchadlMelani_3k1p0ca\source\repos\Shop\Poems\obj\Debug\net8.0\Poems.dll
+C:\Users\SchadlMelani_3k1p0ca\source\repos\Shop\Poems\obj\Debug\net8.0\refint\Poems.dll
+C:\Users\SchadlMelani_3k1p0ca\source\repos\Shop\Poems\obj\Debug\net8.0\Poems.pdb
+C:\Users\SchadlMelani_3k1p0ca\source\repos\Shop\Poems\obj\Debug\net8.0\Poems.genruntimeconfig.cache
+C:\Users\SchadlMelani_3k1p0ca\source\repos\Shop\Poems\obj\Debug\net8.0\ref\Poems.dll
