@@ -1,4 +1,4 @@
-#### Pick your amount of sentences<br>
-#### You can't have negative and also not over 20<br>
-#### Get a good poem<br>
-#### Have fun!<br>
+#### Pick your amount of sentences
+#### You can't have negative and also not over 20
+#### Get a good poem
+#### Have fun!
