@@ -1,5 +1,4 @@
-﻿
-using Poems.Models;
+﻿using Poems.Models;
 using Poems.Services;
 
 namespace Poems.Components;
@@ -12,60 +11,60 @@ public sealed class GeneratePoem
     {
         string[] moods = FallbackPoems.Collections.Keys.ToArray();
 
-        int moodIndex = ConsoleUI.Select(
-            "CHOOSE A MOOD",
-            moods);
+        int moodIndex = ConsoleUI.Select("CHOOSE A MOOD", moods);
 
         if (moodIndex < 0)
             return;
 
         string mood = moods[moodIndex];
 
-        var availableSeeds = FallbackPoems.Collections[mood];
-
         var seedLines = ConsoleUI.SelectMultiple(
             "SELECT SEED LINES",
-            availableSeeds);
+            FallbackPoems.Collections[mood]);
 
+        ConsoleUI.Clear();
+        ConsoleUI.Title("POEM SETTINGS");
+
+        // The warning is shown after the screen clear, otherwise
+        // it would be erased immediately.
         if (seedLines.Count == 0)
         {
             ConsoleUI.Warning(
                 "No seed lines selected. The mood will guide the poem.");
+            Console.WriteLine();
         }
-
-        ConsoleUI.Clear();
-        ConsoleUI.Title("POEM SETTINGS");
 
         Console.Write("Number of lines (1-80, default 8): ");
         string? input = Console.ReadLine();
 
         int lineCount = 8;
 
-        if (!string.IsNullOrWhiteSpace(input))
+        if (!string.IsNullOrWhiteSpace(input) &&
+            (!int.TryParse(input, out lineCount) ||
+             lineCount < 1 ||
+             lineCount > 80))
         {
-            if (!int.TryParse(input, out lineCount) ||
-                lineCount < 1 ||
-                lineCount > 80)
-            {
-                ConsoleUI.Warning(
-                    "Invalid number. Using 8 lines.");
-
-                lineCount = 8;
-            }
+            ConsoleUI.Warning("Invalid number. Using 8 lines.");
+            lineCount = 8;
         }
 
-        // Generate the poem and show the visual progress bar.
+        Console.WriteLine();
+
         Poem poem = await ConsoleProgressBar.RunAsync(
             "Creating your poem",
-            service.GenerateAsync(
-                mood,
-                seedLines,
-                lineCount));
+            service.GenerateAsync(mood, seedLines, lineCount));
 
-        // Display the complete generated poem.
         ShowPoem(poem);
 
-        // Keep the poem visible while asking whether to save it.
+        // Tell the user why the local fallback was used.
+        if (service.LastError is not null)
+        {
+            Console.WriteLine();
+            ConsoleUI.Warning(
+                $"Gemini unavailable, local fallback used: " +
+                service.LastError);
+        }
+
         Console.WriteLine();
         Console.ForegroundColor = ConsoleColor.Yellow;
         Console.Write("Save this poem? (Y/N): ");
@@ -74,13 +73,10 @@ public sealed class GeneratePoem
         string? saveChoice = Console.ReadLine();
 
         if (string.Equals(
-                saveChoice?.Trim(),
-                "Y",
+                saveChoice?.Trim(), "Y",
                 StringComparison.OrdinalIgnoreCase))
         {
-            Console.Write(
-                "Title (leave empty for default): ");
-
+            Console.Write("Title (leave empty for default): ");
             string? title = Console.ReadLine();
 
             if (!string.IsNullOrWhiteSpace(title))

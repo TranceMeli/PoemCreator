@@ -1,5 +1,4 @@
-﻿
-using Poems.Models;
+﻿using Poems.Models;
 using Poems.Services;
 
 namespace Poems.Components;
@@ -8,57 +7,66 @@ public sealed class SavedPoemsView
 {
     public async Task ShowAsync(PoemRepository repository)
     {
-        List<Poem> poems = await repository.GetAllAsync();
-
-        ConsoleUI.Clear();
-        ConsoleUI.Title("SAVED POEMS");
-
-        if (poems.Count == 0)
+        while (true)
         {
-            ConsoleUI.Warning("No saved poems found.");
-            ConsoleUI.Pause();
-            return;
-        }
+            List<Poem> poems = await repository.GetAllAsync();
 
-        string[] options = poems
-            .Select(poem =>
-                $"{poem.Title} | {poem.Mood} | " +
-                $"{poem.CreatedAt:yyyy-MM-dd HH:mm}")
-            .ToArray();
+            if (poems.Count == 0)
+            {
+                ConsoleUI.Clear();
+                ConsoleUI.Title("SAVED POEMS");
+                ConsoleUI.Warning("No saved poems found.");
+                ConsoleUI.Pause();
+                return;
+            }
 
-        int selectedIndex = ConsoleUI.Select(
-            "SELECT A POEM",
-            options);
+            string[] options = poems
+                .Select(poem =>
+                    $"{poem.Title} | {poem.Mood} | " +
+                    $"{poem.CreatedAt:yyyy-MM-dd HH:mm}")
+                .ToArray();
 
-        if (selectedIndex < 0 || selectedIndex >= poems.Count)
-            return;
+            int selectedIndex = ConsoleUI.Select(
+                "SAVED POEMS",
+                options);
 
-        Poem selectedPoem = poems[selectedIndex];
+            if (selectedIndex < 0 || selectedIndex >= poems.Count)
+                return;
 
-        if (string.IsNullOrWhiteSpace(selectedPoem.Text))
-        {
-            ConsoleUI.Clear();
-            ConsoleUI.Title(selectedPoem.Title);
+            Poem poem = poems[selectedIndex];
 
-            ConsoleUI.Warning(
-                "This database entry contains no poem text.");
+            if (string.IsNullOrWhiteSpace(poem.Text))
+            {
+                ConsoleUI.Clear();
+                ConsoleUI.Title(poem.Title);
+                ConsoleUI.Warning(
+                    "This database entry contains no poem text.");
+                Console.WriteLine();
+                ConsoleUI.Muted($"Poem ID: {poem.Id}");
+                ConsoleUI.Muted($"Mood: {poem.Mood}");
+                ConsoleUI.Muted($"Source: {poem.Source}");
+            }
+            else
+            {
+                GeneratePoem.ShowPoem(poem);
+            }
 
+            // ConsoleUI.Select clears the screen, so the actions are
+            // offered as a key prompt to keep the poem visible.
             Console.WriteLine();
-            ConsoleUI.Muted($"Poem ID: {selectedPoem.Id}");
-            ConsoleUI.Muted($"Mood: {selectedPoem.Mood}");
-            ConsoleUI.Muted($"Source: {selectedPoem.Source}");
+            ConsoleUI.Muted("Press D to delete this poem, any other key to go back.");
 
-            Console.WriteLine();
-            ConsoleUI.Muted(
-                "Older database records may have been migrated " +
-                "without their original text.");
+            ConsoleKey key = Console.ReadKey(true).Key;
 
-            ConsoleUI.Pause();
-            return;
+            if (key == ConsoleKey.D &&
+                ConsoleUI.Select(
+                    "DELETE THIS POEM?",
+                    ["Cancel", "Delete"]) == 1)
+            {
+                await repository.DeleteAsync(poem.Id);
+                ConsoleUI.Success("Poem deleted.");
+                ConsoleUI.Pause();
+            }
         }
-
-        GeneratePoem.ShowPoem(selectedPoem);
-
-        ConsoleUI.Pause();
     }
 }

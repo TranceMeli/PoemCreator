@@ -1,5 +1,4 @@
-﻿
-using Microsoft.Data.Sqlite;
+﻿using Microsoft.Data.Sqlite;
 using System.Globalization;
 using System.Text.Json;
 using Poems.Models;
@@ -25,11 +24,13 @@ public sealed class PoemRepository
 
         _connectionString = new SqliteConnectionStringBuilder
         {
-            DataSource = _databasePath
+            DataSource = _databasePath,
+            Mode = SqliteOpenMode.ReadWriteCreate
         }.ToString();
     }
 
     // Finds the project directory containing the .csproj file.
+    // Falls back to %LOCALAPPDATA%\Poems (e.g. for published builds).
     private static string FindProjectDirectory()
     {
         DirectoryInfo? directory = new(AppContext.BaseDirectory);
@@ -42,7 +43,6 @@ public sealed class PoemRepository
             directory = directory.Parent;
         }
 
-        // Fallback if the project directory cannot be found.
         return Path.Combine(
             Environment.GetFolderPath(
                 Environment.SpecialFolder.LocalApplicationData),
@@ -53,33 +53,37 @@ public sealed class PoemRepository
         new(_connectionString);
 
     // Creates the table and migrates older database schemas.
+    // Writes nothing to the console: the dashboard clears the screen
+    // right afterwards, so the output would never be seen.
     public async Task InitializeAsync()
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
 
-        Console.WriteLine($"Database path: {_databasePath}");
+        await using var transaction =
+            (SqliteTransaction)await connection.BeginTransactionAsync();
 
-        var createCommand = connection.CreateCommand();
-        createCommand.CommandText =
-            """
-            CREATE TABLE IF NOT EXISTS Poems (
-                Id INTEGER PRIMARY KEY AUTOINCREMENT,
-                Title TEXT NOT NULL,
-                Mood TEXT NOT NULL,
-                SeedLinesJson TEXT NOT NULL,
-                Text TEXT NOT NULL,
-                LineCount INTEGER NOT NULL,
-                Source TEXT NOT NULL,
-                CreatedAt TEXT NOT NULL
-            );
-            """;
+        await using (var create = connection.CreateCommand())
+        {
+            create.Transaction = transaction;
+            create.CommandText =
+                """
+                CREATE TABLE IF NOT EXISTS Poems (
+                    Id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    Title TEXT NOT NULL,
+                    Mood TEXT NOT NULL,
+                    SeedLinesJson TEXT NOT NULL,
+                    Text TEXT NOT NULL,
+                    LineCount INTEGER NOT NULL,
+                    Source TEXT NOT NULL,
+                    CreatedAt TEXT NOT NULL
+                );
+                """;
+            await create.ExecuteNonQueryAsync();
+        }
 
-        await createCommand.ExecuteNonQueryAsync();
-
-        // Inspect the existing database table.
         HashSet<string> columns =
-            await GetColumnNamesAsync(connection);
+            await GetColumnNamesAsync(connection, transaction);
 
         if (!columns.Contains("Id"))
         {
@@ -105,114 +109,89 @@ public sealed class PoemRepository
             if (columns.Contains(column.Name))
                 continue;
 
-            var alterCommand = connection.CreateCommand();
-            alterCommand.CommandText =
+            await using var alter = connection.CreateCommand();
+            alter.Transaction = transaction;
+
+            // Column names come only from the fixed list above.
+            alter.CommandText =
                 $"ALTER TABLE Poems ADD COLUMN {column.Name} " +
                 $"{column.Definition};";
 
-            await alterCommand.ExecuteNonQueryAsync();
-
-            columns.Add(column.Name);
+            await alter.ExecuteNonQueryAsync();
         }
 
-        // Repair missing or empty values in existing records.
-        var repairCommand = connection.CreateCommand();
-        repairCommand.CommandText =
-            """
-            UPDATE Poems
-            SET Title = 'Untitled'
-            WHERE Title IS NULL OR TRIM(Title) = '';
-
-            UPDATE Poems
-            SET Mood = 'Peaceful'
-            WHERE Mood IS NULL OR TRIM(Mood) = '';
-
-            UPDATE Poems
-            SET SeedLinesJson = '[]'
-            WHERE SeedLinesJson IS NULL
-               OR TRIM(SeedLinesJson) = '';
-
-            UPDATE Poems
-            SET Text = ''
-            WHERE Text IS NULL;
-
-            UPDATE Poems
-            SET LineCount = 0
-            WHERE LineCount IS NULL;
-
-            UPDATE Poems
-            SET Source = 'Local fallback'
-            WHERE Source IS NULL OR TRIM(Source) = '';
-
-            UPDATE Poems
-            SET CreatedAt = $now
-            WHERE CreatedAt IS NULL OR TRIM(CreatedAt) = '';
-            """;
-
-        repairCommand.Parameters.AddWithValue(
-            "$now",
-            DateTime.Now.ToString("O"));
-
-        await repairCommand.ExecuteNonQueryAsync();
-
-        // Verify that the table exists.
-        var checkCommand = connection.CreateCommand();
-        checkCommand.CommandText =
-            """
-            SELECT COUNT(*)
-            FROM sqlite_master
-            WHERE type = 'table'
-              AND name = 'Poems';
-            """;
-
-        long tableExists = Convert.ToInt64(
-            await checkCommand.ExecuteScalarAsync());
-
-        if (tableExists == 0)
+        // Repair empty values in records from older versions.
+        await using (var repair = connection.CreateCommand())
         {
-            throw new InvalidOperationException(
-                "The Poems table could not be created.");
+            repair.Transaction = transaction;
+            repair.CommandText =
+                """
+                UPDATE Poems SET Title = 'Untitled'
+                WHERE Title IS NULL OR TRIM(Title) = '';
+
+                UPDATE Poems SET Mood = 'Peaceful'
+                WHERE Mood IS NULL OR TRIM(Mood) = '';
+
+                UPDATE Poems SET SeedLinesJson = '[]'
+                WHERE SeedLinesJson IS NULL OR TRIM(SeedLinesJson) = '';
+
+                UPDATE Poems SET Text = ''
+                WHERE Text IS NULL;
+
+                UPDATE Poems SET LineCount = 0
+                WHERE LineCount IS NULL;
+
+                UPDATE Poems SET Source = 'Local fallback'
+                WHERE Source IS NULL OR TRIM(Source) = '';
+
+                UPDATE Poems SET CreatedAt = $now
+                WHERE CreatedAt IS NULL OR TRIM(CreatedAt) = '';
+                """;
+
+            repair.Parameters.AddWithValue(
+                "$now",
+                DateTime.Now.ToString("O"));
+
+            await repair.ExecuteNonQueryAsync();
         }
 
-        // Refresh the number of saved poems.
-        var countCommand = connection.CreateCommand();
-        countCommand.CommandText = "SELECT COUNT(*) FROM Poems;";
+        await using (var count = connection.CreateCommand())
+        {
+            count.Transaction = transaction;
+            count.CommandText = "SELECT COUNT(*) FROM Poems;";
 
-        SavedCount = Convert.ToInt32(
-            await countCommand.ExecuteScalarAsync());
+            SavedCount = Convert.ToInt32(
+                await count.ExecuteScalarAsync());
+        }
 
-        Console.WriteLine(
-            "Database table 'Poems' initialized successfully.");
+        await transaction.CommitAsync();
     }
 
-    // Returns the existing column names.
     private static async Task<HashSet<string>> GetColumnNamesAsync(
-        SqliteConnection connection)
+        SqliteConnection connection,
+        SqliteTransaction transaction)
     {
         var columns = new HashSet<string>(
             StringComparer.OrdinalIgnoreCase);
 
-        var command = connection.CreateCommand();
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = "PRAGMA table_info('Poems');";
 
-        await using var reader =
-            await command.ExecuteReaderAsync();
+        await using var reader = await command.ExecuteReaderAsync();
 
         while (await reader.ReadAsync())
-        {
             columns.Add(reader.GetString(1));
-        }
 
         return columns;
     }
 
-    // Saves a poem.
     public async Task SaveAsync(Poem poem)
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
 
-        var command = connection.CreateCommand();
+        await using var command = connection.CreateCommand();
         command.CommandText =
             """
             INSERT INTO Poems
@@ -221,38 +200,22 @@ public sealed class PoemRepository
             VALUES
                 ($title, $mood, $seeds, $text,
                  $lineCount, $source, $createdAt);
+
+            SELECT last_insert_rowid();
             """;
 
-        command.Parameters.AddWithValue(
-            "$title", poem.Title);
-
-        command.Parameters.AddWithValue(
-            "$mood", poem.Mood);
-
+        command.Parameters.AddWithValue("$title", poem.Title);
+        command.Parameters.AddWithValue("$mood", poem.Mood);
         command.Parameters.AddWithValue(
             "$seeds", JsonSerializer.Serialize(poem.SeedLines));
-
-        command.Parameters.AddWithValue(
-            "$text", poem.Text);
-
-        command.Parameters.AddWithValue(
-            "$lineCount", poem.LineCount);
-
-        command.Parameters.AddWithValue(
-            "$source", poem.Source);
-
+        command.Parameters.AddWithValue("$text", poem.Text);
+        command.Parameters.AddWithValue("$lineCount", poem.LineCount);
+        command.Parameters.AddWithValue("$source", poem.Source);
         command.Parameters.AddWithValue(
             "$createdAt", poem.CreatedAt.ToString("O"));
 
-        await command.ExecuteNonQueryAsync();
-
-        var idCommand = connection.CreateCommand();
-        idCommand.CommandText = "SELECT last_insert_rowid();";
-
-        poem.Id = Convert.ToInt32(
-            await idCommand.ExecuteScalarAsync());
-
-        await RefreshCountAsync();
+        poem.Id = Convert.ToInt32(await command.ExecuteScalarAsync());
+        SavedCount++;
     }
 
     // Returns all poems, newest first.
@@ -263,33 +226,29 @@ public sealed class PoemRepository
         await using var connection = CreateConnection();
         await connection.OpenAsync();
 
-        var command = connection.CreateCommand();
+        await using var command = connection.CreateCommand();
         command.CommandText =
             """
             SELECT Id, Title, Mood, SeedLinesJson,
                    Text, LineCount, Source, CreatedAt
             FROM Poems
-            ORDER BY CreatedAt DESC;
+            ORDER BY CreatedAt DESC, Id DESC;
             """;
 
-        await using var reader =
-            await command.ExecuteReaderAsync();
+        await using var reader = await command.ExecuteReaderAsync();
 
         while (await reader.ReadAsync())
-        {
             poems.Add(ReadPoem(reader));
-        }
 
         return poems;
     }
 
-    // Returns one poem by ID.
     public async Task<Poem?> GetByIdAsync(int id)
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
 
-        var command = connection.CreateCommand();
+        await using var command = connection.CreateCommand();
         command.CommandText =
             """
             SELECT Id, Title, Mood, SeedLinesJson,
@@ -300,43 +259,26 @@ public sealed class PoemRepository
 
         command.Parameters.AddWithValue("$id", id);
 
-        await using var reader =
-            await command.ExecuteReaderAsync();
+        await using var reader = await command.ExecuteReaderAsync();
 
         return await reader.ReadAsync()
             ? ReadPoem(reader)
             : null;
     }
 
-    // Deletes a poem by ID.
     public async Task DeleteAsync(int id)
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
 
-        var command = connection.CreateCommand();
+        await using var command = connection.CreateCommand();
         command.CommandText = "DELETE FROM Poems WHERE Id = $id;";
         command.Parameters.AddWithValue("$id", id);
 
-        await command.ExecuteNonQueryAsync();
-
-        await RefreshCountAsync();
+        int deleted = await command.ExecuteNonQueryAsync();
+        SavedCount = Math.Max(0, SavedCount - deleted);
     }
 
-    // Refreshes the saved poem count.
-    private async Task RefreshCountAsync()
-    {
-        await using var connection = CreateConnection();
-        await connection.OpenAsync();
-
-        var command = connection.CreateCommand();
-        command.CommandText = "SELECT COUNT(*) FROM Poems;";
-
-        SavedCount = Convert.ToInt32(
-            await command.ExecuteScalarAsync());
-    }
-
-    // Converts a database record into a Poem object.
     private static Poem ReadPoem(SqliteDataReader reader)
     {
         string text = reader.IsDBNull(4)
@@ -374,28 +316,17 @@ public sealed class PoemRepository
         return new Poem
         {
             Id = reader.GetInt32(0),
-
-            Title = reader.IsDBNull(1)
-                ? "Untitled"
-                : reader.GetString(1),
-
-            Mood = reader.IsDBNull(2)
-                ? "Peaceful"
-                : reader.GetString(2),
-
+            Title = reader.IsDBNull(1) ? "Untitled" : reader.GetString(1),
+            Mood = reader.IsDBNull(2) ? "Peaceful" : reader.GetString(2),
             SeedLines = seedLines,
             Text = text,
-
             LineCount = reader.IsDBNull(5)
                 ? text.Split(
-                    '\n',
-                    StringSplitOptions.RemoveEmptyEntries).Length
+                    '\n', StringSplitOptions.RemoveEmptyEntries).Length
                 : reader.GetInt32(5),
-
             Source = reader.IsDBNull(6)
                 ? "Local fallback"
                 : reader.GetString(6),
-
             CreatedAt = createdAt
         };
     }

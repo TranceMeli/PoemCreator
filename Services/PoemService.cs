@@ -1,5 +1,4 @@
-﻿
-using System.Text;
+﻿using System.Text;
 using System.Text.Json;
 using Poems.Models;
 
@@ -14,7 +13,11 @@ public sealed class PoemService
 
     private readonly string _apiKey;
 
-    public string ModelName { get; } = "gemini-2.5-flash";
+    public string ModelName { get; } = "gemini-3.8-flash";
+
+    // Why the last GenerateAsync call used the local fallback.
+    // Null when Gemini answered or when no API key is configured.
+    public string? LastError { get; private set; }
 
     public bool IsAiConfigured =>
         !string.IsNullOrWhiteSpace(_apiKey) &&
@@ -39,13 +42,8 @@ public sealed class PoemService
     {
         string[] paths =
         [
-            Path.Combine(
-                AppContext.BaseDirectory,
-                "appsettings.json"),
-
-            Path.Combine(
-                Directory.GetCurrentDirectory(),
-                "appsettings.json")
+            Path.Combine(AppContext.BaseDirectory, "appsettings.json"),
+            Path.Combine(Directory.GetCurrentDirectory(), "appsettings.json")
         ];
 
         foreach (string path in paths.Distinct())
@@ -69,21 +67,12 @@ public sealed class PoemService
                         return value.Trim();
                 }
             }
-            catch (JsonException)
+            catch (Exception ex) when (
+                ex is JsonException or IOException
+                    or UnauthorizedAccessException
+                    or InvalidOperationException)
             {
-                // Try the next configuration file.
-            }
-            catch (IOException)
-            {
-                // Try the next configuration file.
-            }
-            catch (UnauthorizedAccessException)
-            {
-                // Try the next configuration file.
-            }
-            catch (InvalidOperationException)
-            {
-                // The API key has an unexpected JSON type.
+                // Unreadable file or unexpected JSON: try the next path.
             }
         }
 
@@ -96,6 +85,7 @@ public sealed class PoemService
         int lineCount)
     {
         lineCount = Math.Clamp(lineCount, 1, 80);
+        LastError = null;
 
         if (IsAiConfigured)
         {
@@ -106,37 +96,20 @@ public sealed class PoemService
                     seedLines,
                     lineCount);
             }
-            catch (HttpRequestException)
+            catch (Exception ex) when (
+                ex is HttpRequestException or TaskCanceledException
+                    or JsonException or InvalidOperationException)
             {
-                // API unavailable or returned an unsuccessful status.
-                // Continue with the local fallback.
-            }
-            catch (TaskCanceledException)
-            {
-                // Request timed out.
-            }
-            catch (JsonException)
-            {
-                // Invalid JSON returned by the API.
-            }
-            catch (InvalidOperationException)
-            {
-                // Unexpected API response structure or empty result.
-            }
-            catch (KeyNotFoundException)
-            {
-                // Expected properties are missing from the response.
-            }
-            catch (IndexOutOfRangeException)
-            {
-                // The API returned no candidate or text parts.
+                // Remember the reason; the UI shows it after the poem,
+                // because nothing written to the console during the
+                // progress bar survives the next screen clear.
+                LastError = ex is TaskCanceledException
+                    ? "The Gemini request timed out."
+                    : ex.Message;
             }
         }
 
-        return CreateFallbackPoem(
-            mood,
-            seedLines,
-            lineCount);
+        return CreateFallbackPoem(mood, seedLines, lineCount);
     }
 
     private async Task<Poem> GenerateWithGeminiAsync(
@@ -145,8 +118,27 @@ public sealed class PoemService
         int lineCount)
     {
         string url =
-            $"https://generativelanguage.googleapis.com/v1beta/" +
+            "https://generativelanguage.googleapis.com/v1beta/" +
             $"models/{ModelName}:generateContent";
+
+        var prompt = new StringBuilder();
+        prompt.AppendLine("Write an original poem in English.");
+        prompt.AppendLine($"Mood: {mood}");
+        prompt.AppendLine($"Exactly {lineCount} non-empty lines.");
+
+        if (seedLines.Count > 0)
+        {
+            prompt.AppendLine(
+                "Use these seed lines as inspiration and " +
+                "incorporate them naturally where possible:");
+
+            foreach (string seed in seedLines)
+                prompt.AppendLine(seed);
+        }
+
+        prompt.Append(
+            "Return only the poem text, without a title, " +
+            "markdown or commentary.");
 
         var requestBody = new
         {
@@ -154,37 +146,21 @@ public sealed class PoemService
             {
                 new
                 {
-                    parts = new[]
-                    {
-                        new
-                        {
-                            text =
-                                $"Write an original poem in English.\n" +
-                                $"Mood: {mood}\n" +
-                                $"Exactly {lineCount} non-empty lines.\n" +
-                                "Use these seed lines as inspiration and " +
-                                "incorporate them naturally where possible:\n" +
-                                string.Join("\n", seedLines) +
-                                "\nReturn only the poem text, without a title."
-                        }
-                    }
+                    parts = new[] { new { text = prompt.ToString() } }
                 }
             },
             generationConfig = new
             {
                 temperature = 0.9,
-                maxOutputTokens = Math.Min(4096, lineCount * 45)
+                // Generous limit: thinking models count their internal
+                // reasoning tokens against this budget, and a tight limit
+                // leaves no room for the poem itself (empty answer).
+                maxOutputTokens = 8192
             }
         };
 
-        using var request = new HttpRequestMessage(
-            HttpMethod.Post,
-            url);
-
-        request.Headers.Add(
-            "x-goog-api-key",
-            _apiKey);
-
+        using var request = new HttpRequestMessage(HttpMethod.Post, url);
+        request.Headers.Add("x-goog-api-key", _apiKey);
         request.Content = new StringContent(
             JsonSerializer.Serialize(requestBody),
             Encoding.UTF8,
@@ -193,38 +169,34 @@ public sealed class PoemService
         using HttpResponseMessage response =
             await HttpClient.SendAsync(request);
 
-        response.EnsureSuccessStatusCode();
+        string json = await response.Content.ReadAsStringAsync();
 
-        string json =
-            await response.Content.ReadAsStringAsync();
-
-        using JsonDocument document =
-            JsonDocument.Parse(json);
-
-        string text = document.RootElement
-            .GetProperty("candidates")[0]
-            .GetProperty("content")
-            .GetProperty("parts")[0]
-            .GetProperty("text")
-            .GetString() ?? string.Empty;
-
-        if (string.IsNullOrWhiteSpace(text))
+        if (!response.IsSuccessStatusCode)
         {
-            throw new InvalidOperationException(
-                "The API returned an empty poem.");
+            throw new HttpRequestException(
+                $"HTTP {(int)response.StatusCode} " +
+                $"({response.StatusCode}): {ReadErrorMessage(json)}");
         }
+
+        using JsonDocument document = JsonDocument.Parse(json);
+
+        string text = ExtractText(document.RootElement);
 
         string[] lines = text
+            .Replace("\r\n", "\n")
+            .Replace('\r', '\n')
             .Split('\n', StringSplitOptions.TrimEntries)
-            .Where(line => !string.IsNullOrWhiteSpace(line))
-            .Take(lineCount)
+            .Where(line => line.Length > 0 && !line.StartsWith("```"))
             .ToArray();
 
-        if (lines.Length == 0)
+        if (lines.Length < lineCount)
         {
             throw new InvalidOperationException(
-                "No poem lines were returned.");
+                $"Gemini returned only {lines.Length} of " +
+                $"{lineCount} requested lines.");
         }
+
+        lines = lines.Take(lineCount).ToArray();
 
         return new Poem
         {
@@ -233,9 +205,80 @@ public sealed class PoemService
             SeedLines = seedLines.ToList(),
             Text = string.Join(Environment.NewLine, lines),
             LineCount = lines.Length,
-            Source = "Gemini AI",
+            Source = "Gemini API",
             CreatedAt = DateTime.Now
         };
+    }
+
+    // Joins all text parts of the first candidate and explains
+    // why there is no text (blocked prompt, token limit, ...).
+    private static string ExtractText(JsonElement root)
+    {
+        if (!root.TryGetProperty("candidates", out JsonElement candidates) ||
+            candidates.GetArrayLength() == 0)
+        {
+            string reason =
+                root.TryGetProperty("promptFeedback", out JsonElement feedback) &&
+                feedback.TryGetProperty("blockReason", out JsonElement block)
+                    ? block.GetString() ?? "unknown"
+                    : "no candidates";
+
+            throw new InvalidOperationException(
+                $"Gemini returned no poem ({reason}).");
+        }
+
+        JsonElement candidate = candidates[0];
+        var text = new StringBuilder();
+
+        if (candidate.TryGetProperty("content", out JsonElement content) &&
+            content.TryGetProperty("parts", out JsonElement parts))
+        {
+            foreach (JsonElement part in parts.EnumerateArray())
+            {
+                if (part.TryGetProperty("thought", out JsonElement thought) &&
+                    thought.ValueKind == JsonValueKind.True)
+                    continue;
+
+                if (part.TryGetProperty("text", out JsonElement value))
+                    text.Append(value.GetString());
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(text.ToString()))
+        {
+            string finish =
+                candidate.TryGetProperty("finishReason", out JsonElement f)
+                    ? f.GetString() ?? "unknown"
+                    : "unknown";
+
+            throw new InvalidOperationException(
+                $"Gemini returned an empty poem (finishReason: {finish}).");
+        }
+
+        return text.ToString();
+    }
+
+    private static string ReadErrorMessage(string json)
+    {
+        try
+        {
+            using JsonDocument errorDocument = JsonDocument.Parse(json);
+
+            if (errorDocument.RootElement.TryGetProperty(
+                    "error", out JsonElement error) &&
+                error.TryGetProperty(
+                    "message", out JsonElement message))
+            {
+                return message.GetString() ?? json;
+            }
+        }
+        catch (Exception ex) when (
+            ex is JsonException or InvalidOperationException)
+        {
+            // Not the usual error format: show the raw body below.
+        }
+
+        return json.Length > 300 ? json[..300] : json;
     }
 
     private static Poem CreateFallbackPoem(
@@ -244,21 +287,14 @@ public sealed class PoemService
         int lineCount)
     {
         IReadOnlyList<string> lines =
-            FallbackPoems.GetRandomLines(
-                mood,
-                lineCount,
-                seedLines);
-
-        string text = string.Join(
-            Environment.NewLine,
-            lines);
+            FallbackPoems.GetRandomLines(mood, lineCount, seedLines);
 
         return new Poem
         {
             Title = $"{mood} Poem",
             Mood = mood,
             SeedLines = seedLines.ToList(),
-            Text = text,
+            Text = string.Join(Environment.NewLine, lines),
             LineCount = lines.Count,
             Source = "Local fallback",
             CreatedAt = DateTime.Now
