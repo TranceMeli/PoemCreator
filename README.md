@@ -1,5 +1,14 @@
 # PoemCreator
 
+<p align="left">
+  <img src="https://img.shields.io/badge/C%23-.NET%2010-512BD4?style=for-the-badge&logo=dotnet&logoColor=white" alt="C# .NET 10" />
+  <img src="https://img.shields.io/badge/SQLite-Database-003B57?style=for-the-badge&logo=sqlite&logoColor=white" alt="SQLite" />
+  <img src="https://img.shields.io/badge/Google-Gemini%20API-8E75B2?style=for-the-badge&logo=googlegemini&logoColor=white" alt="Google Gemini API" />
+</p>
+
+## Preview
+<img width="390" height="290" alt="image" src="https://github.com/user-attachments/assets/3be2e53b-cae8-403f-82b7-16b7a6d3d4e4" />
+
 A C# console application for creating, customizing, and saving poems with AI assistance.
 
 PoemCreator uses the Gemini API to generate original poems based on a selected mood and user-provided seed lines. If the API is unavailable or not configured, the application uses a local collection of poems as a fallback.
